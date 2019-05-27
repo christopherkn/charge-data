@@ -1,0 +1,271 @@
+---
+title: "ACLU Project Mkdn"
+author: "Chris Kaiser-Nyman"
+date: "4/22/2019"
+output: html_document
+---
+
+This markdown file is very similar to the ccc_charge_data_final.Rmd file, but contains a litle bit more of the iterative process by which the code was developed, and commentary around concerns with the code and thoughts for future development.
+
+
+```{r chunk_name, results="hide"}
+library(tidyverse)
+set.seed(101)
+```
+
+Load data:
+```{r}
+
+data <- read_csv("aclu_Nov_2014.csv")
+
+```
+
+
+
+Change column names so spaces are underscores:
+
+```{r}
+
+names(data) <- make.names(names(data),unique = TRUE)
+names(data) <- gsub(x = names(data), pattern = "\\.\\.", replacement = "_")  
+names(data) <- gsub(x = names(data), pattern = "\\.", replacement = "_")
+
+```
+
+
+Creating a column for total jail time for each case:
+
+```{r}
+data$total_jail_time <- sum(data$Jail_Time_1_1_,
+                            data$Jail_Time_2_1_,
+                            data$Jail_Time_3_1_,
+                            data$Jail_Time_4_1_,
+                            data$Jail_Time_5_1_,
+                            data$Jail_Time_1_2_,
+                            data$Jail_Time_2_2_,
+                            data$Jail_Time_3_2_,
+                            data$Jail_Time_4_2_,
+                            data$Jail_Time_5_2_,
+                            data$Jail_Time_1_3_,
+                            data$Jail_Time_2_3_,
+                            data$Jail_Time_3_3_,
+                            data$Jail_Time_4_3_,
+                            data$Jail_Time_5_3_,
+                            data$Jail_Time_1_4_,
+                            data$Jail_Time_2_4_,
+                            data$Jail_Time_3_4_,
+                            data$Jail_Time_4_4_,
+                            data$Jail_Time_5_4_)
+```
+
+
+
+
+
+
+##########################################################
+Merging written descriptions to the codes in our dataframe:
+##########################################################
+
+
+Charge code codebook was imported from here on April 5, 2019: https://oag.ca.gov/law/code-tables
+Txt link: https://oag.ca.gov/sites/all/files/agweb/law-enforcement/code-tables/macrcode.txt?051520190840
+Direct csv link: https://oag.ca.gov/sites/all/files/agweb/law-enforcement/code-tables/macrcode.csv?051520190840
+```{r}
+
+# import charge code codebook
+chargecodes <- read_csv("chargecodes.csv", col_names = FALSE)
+head(chargecodes)
+```
+
+
+
+```{r}
+# name columns of that dataframe. 
+# It isn't clear to me what columns 2 or 3 refer to.
+names(chargecodes) <- c("BCS_code", "no_2","no_3", "m_f", "offense_number", "penal_code", "offense", "sentence")
+
+
+# Charge codes dataframe does not include ampersands and CVC is listed as VC so:
+# get rid of any ampersands (&) in the main dataframe.
+data$Charge_Code_1 <- sub("&", "", data$Charge_Code_1)
+# change CVC to VC
+data$Charge_Code_1 <- sub("CVC", "VC", data$Charge_Code_1)
+
+# create key column in both dataframes that match each other
+chargecodes$key <- paste(chargecodes$penal_code, chargecodes$offense_number, chargecodes$m_f, sep="")
+data$datakey <- paste(data$Charge_Code_1, data$Severity_1_, sep="")
+
+
+# remove any spaces so keys line up
+chargecodes$key <- gsub(" ", "", chargecodes$key, fixed = TRUE)
+data$datakey <- gsub(" ", "", data$datakey, fixed = TRUE)
+
+# make everything uppercase
+chargecodes$key <- toupper(chargecodes$key)
+data$datakey <- toupper(data$datakey)
+
+# Some charge codes have multiple descriptions :( let's paste 
+# those together, so each charge code has a unique description
+uniquechargecodes <- chargecodes %>%
+  group_by(key) %>%
+  summarise(unique_description = paste(offense, collapse = "----,---- "))
+
+bcs_table <- chargecodes %>%
+  group_by(key) %>%
+  summarise(BCS_code_added = paste(BCS_code, collapse = "----,---- "))
+# issue here is that a few BCS codes are both misdemeanor (M) and felony (F), 
+# so not sure how severtiy is measured for those
+
+
+# do the merge!
+datamergetest <- merge(x = data, 
+                y = uniquechargecodes, 
+                by.x = "datakey", 
+                by.y = "key", 
+                all.x = TRUE)
+```
+
+check % of NAs
+```{r}
+sum(is.na(datamergetest$unique_description))/nrow(datamergetest)
+
+```
+
+
+see where those NAs are coming from:
+```{r}
+data_nas <- datamergetest %>%
+  select(datakey, unique_description) %>%
+  filter(is.na(unique_description))
+  
+problems_table <- as.data.frame(table(data_nas$datakey)) %>%
+  arrange(-Freq)
+problems_table
+```
+
+Manually enter some of the highest-frequency ones into the chargecodes data table key
+
+```{r}
+
+line1 <- c("PC459/460(A)F", "First or second degree burglary / Felony BURGLARY:FIRST DEGREE")
+line2 <- c("PC211/212.5(C)F", "Robbary 1st or 2nd degree / Felony ROBBERY:SECOND DEGREE")
+line3 <- c("PC484/488M", "PC484 is a lot of things / PC488(M) is PETTY THEFT")
+line4 <- c("PC459/460(B)F", "Shoplifting or 1st or 2nd degree Burglary/ Felony BURGLARY:SECOND DEGREE")
+line5 <- c("PC422F", "PC 422 (F) could be VIOLATE CIVIL RIGHTS:CAUSE VIOLENT INJURY/ETC, or CAUSE PROPERTY DAMAGE, or THREATEN CRIME WITH INTENT TO TERRORIZE")
+line6 <- c("PC496DF", "ATTEMPT TO COMMIT 496 PC:STOLEN PROPERTY")
+line7 <- c("HS11377M", "HS 11377(A) is POSSESS CONTROLLED SUBSTANCE, but this has no (A)")
+line8 <- c("PC3455F", "Felony Violation of Post-Release Community Supervision (PRCS)")
+line9 <- c("PC3000.08F",  "Violation of `Sex-Offender` Supervision")
+
+uniquechargecodes_manualupdate <- rbind(uniquechargecodes, line1, line2, line3, line4, line5, line6, line7, line8, line9)
+
+rm(line1, line2, line3, line4, line5, line6, line7, line8, line9)
+
+```
+
+
+See how the update treats us:
+```{r}
+datamergetest_update <- merge(x = data, 
+                y = uniquechargecodes_manualupdate, 
+                by.x = "datakey", 
+                by.y = "key", 
+                all.x = TRUE)
+```
+
+  
+Check % updates:
+```{r}
+sum(is.na(datamergetest_update$unique_description))/nrow(datamergetest_update)
+```
+
+Woohoo! Half as many are now missing!
+
+
+See where the problems are coming from:
+```{r}
+data_nas_2 <- datamergetest_update %>%
+  select(datakey, unique_description) %>%
+  filter(is.na(unique_description))
+  
+problems_table_2 <- as.data.frame(table(data_nas_2$datakey)) %>%
+  arrange(-Freq)
+
+problems_table_2
+```
+
+The output above shows a table representing the charges that need to be added to the charge code table in order to get all of the charges merged.
+
+The biggest issue here is is dealing with the backslashes "/", where multiple charges have been smushed into one.
+
+
+Here is the beginning to one way of solving this problem. It involves splitting any charge codes that have a backslash in it into different columns. It comes from a StackOverflow user who responded to my post here: https://stackoverflow.com/questions/56104718/how-to-split-all-strings-in-a-column-and-include-prefix-in-all-the-new-data
+
+```{r}
+df <- data.frame("code" = c("PC211/212.5(C)/664F", "VC23152(A)/23550F", "PC459/460(B)M", "PC187(A)/664F"), stringsAsFactors = FALSE)
+
+dftest <- df %>%
+    rowid_to_column("row") %>%
+    separate(code, c("prefix", "main", "suffix"), sep = "((?<=[A-Z]{2})(?=\\d)|(?<=[\\d\\)])(?=[A-Z]))", remove = F) %>%
+    separate(main, into = paste0("code_", 1:3), sep = "/", fill = "right") %>%
+    gather(key, entry, starts_with("code_")) %>%
+    filter(!is.na(entry)) %>%
+    unite(entry, prefix, entry, suffix, sep = "") %>%
+    spread(key, entry) %>%
+    select(-row)
+
+dftest
+```
+
+
+As you can see above, the first column is the "cleaned" charge code (it was "cleaned" by taking the Charge Code from the original dataset, getting rid of ampersands "&", changing "CVC" to "VC", removing spaces, making everything uppercase, etc).
+
+The second column is the first part of the first column, including the "F" suffix at the end of the data in the first column. The second column is the middle code, because it is between two backslashes, but preserves the prefix (PC) and suffix (F). The third column is the third charge code, and still includes the prefix and suffix.
+
+
+This can be applied to the whole dataframe (or, in the case below, a subset of it)
+
+
+```{r}
+
+sample_df <- data[sample(nrow(data), 100), ]
+
+# create a more manageable subset with just first 9 columns
+subset_df <- sample_df %>%
+  select(X1, Race, Gender, datakey)
+
+
+test <- subset_df %>%
+    rowid_to_column("row") %>%
+    separate(datakey, c("prefix", "main", "suffix"), 
+             sep = "((?<=[A-Z]{2})(?=\\d)|(?<=[\\d\\)])(?=[A-Z]))", remove = F) %>%
+    separate(main, into = paste0("code_", 1:3), sep = "/", fill = "right") %>%
+    gather(key, entry, starts_with("code_")) %>%
+    filter(!is.na(entry)) %>%
+    unite(entry, prefix, entry, suffix, sep = "") %>%
+    spread(key, entry) %>%
+    select(-row)
+
+head(test)
+```
+
+
+The next step here would be to merge the chargecodes dataframe, which includes the BCS codes and written descriptions of each charge, onto this for each column, and then paste the resulting columns together. This would have to be repeated for each of the 11 "Charge_Code" columns (and potentially for "charge enhance" columns, see below)
+
+
+
+
+
+The "Charge Enhance" column may be an important control for any analysis done on this data. It appears to be in a simmilar format to the "Charge Code" columns, but does not include the suffix "F" or "M" as the "Charge Code" columns do.
+
+```{r}
+sample(data$Charge_Enhance_1_1_, 50)
+```
+
+
+Assuming that these codes are the same as the "Charge Codes" codes, the only hiccup here that "M" & "F" have different BCS codes, so getting some advice as to how to classify the severity of these enhancements will be important. Merging of the BCS codes & written descriptions for all 55 "Charge Enhance" columns should be done to allow controlling for the severity of enhancements.
+
+
+
+

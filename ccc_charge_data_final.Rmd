@@ -1,0 +1,569 @@
+---
+title: "ACLU Project"
+author: "Chris Kaiser-Nyman"
+date: "5/15/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r chunk_name, results="hide"}
+library(tidyverse)
+set.seed(101)
+```
+
+
+
+
+Load data:
+```{r}
+
+data <- read_csv("aclu_Nov_2014.csv")
+```
+
+
+
+
+Change column names so spaces are underscores:
+
+```{r}
+
+names(data) <- make.names(names(data),unique = TRUE)
+names(data) <- gsub(x = names(data), pattern = "\\.\\.", replacement = "_")  
+names(data) <- gsub(x = names(data), pattern = "\\.", replacement = "_")
+
+```
+
+
+Creating a column for total jail time for each case:
+
+```{r}
+data$total_jail_time <- sum(data$Jail_Time_1_1_,
+                            data$Jail_Time_2_1_,
+                            data$Jail_Time_3_1_,
+                            data$Jail_Time_4_1_,
+                            data$Jail_Time_5_1_,
+                            data$Jail_Time_1_2_,
+                            data$Jail_Time_2_2_,
+                            data$Jail_Time_3_2_,
+                            data$Jail_Time_4_2_,
+                            data$Jail_Time_5_2_,
+                            data$Jail_Time_1_3_,
+                            data$Jail_Time_2_3_,
+                            data$Jail_Time_3_3_,
+                            data$Jail_Time_4_3_,
+                            data$Jail_Time_5_3_,
+                            data$Jail_Time_1_4_,
+                            data$Jail_Time_2_4_,
+                            data$Jail_Time_3_4_,
+                            data$Jail_Time_4_4_,
+                            data$Jail_Time_5_4_)
+```
+
+
+
+
+
+
+
+##########################################################
+Merging text descriptions of charges
+##########################################################
+
+
+
+Charge code codebook was imported from here on April 5, 2019: https://oag.ca.gov/law/code-tables
+Txt link: https://oag.ca.gov/sites/all/files/agweb/law-enforcement/code-tables/macrcode.txt?051520190840
+Direct csv link: https://oag.ca.gov/sites/all/files/agweb/law-enforcement/code-tables/macrcode.csv?051520190840
+```{r}
+
+chargecodes <- read_csv("chargecodes.csv", col_names = FALSE)
+# name columns
+# it isn't clear to me what columns 2 and 3 are for
+names(chargecodes) <- c("BCS_code", "no_2","no_3", "m_f", "offense_number", "penal_code", "offense", "sentence")
+
+```
+
+
+
+Clean charge codebook:
+```{r}
+
+# create key
+chargecodes$key <- paste(chargecodes$penal_code, chargecodes$offense_number, chargecodes$m_f, sep="")
+# remove any spaces so keys will line up
+chargecodes$key <- gsub(" ", "", chargecodes$key, fixed = TRUE)
+# make everything uppercase
+chargecodes$key <- toupper(chargecodes$key)
+
+# Some charge codes have multiple descriptions :( let's paste 
+# those together, so each charge code has a unique description
+charge_codebook <- chargecodes %>%
+  group_by(key) %>%
+  summarise(unique_description = paste(offense, collapse = "----,---- "))
+
+#Manually enter some of the highest-frequency ones into the chargecodes data table key
+line1 <- c("PC459/460(A)F", "First or second degree burglary / Felony BURGLARY:FIRST DEGREE")
+line2 <- c("PC211/212.5(C)F", "Robbary 1st or 2nd degree / Felony ROBBERY:SECOND DEGREE")
+line3 <- c("PC484/488M", "PC484 is a lot of things / PC488(M) is PETTY THEFT")
+line4 <- c("PC459/460(B)F", "Shoplifting or 1st or 2nd degree Burglary/ Felony BURGLARY:SECOND DEGREE")
+line5 <- c("PC422F", "PC 422 (F) could be VIOLATE CIVIL RIGHTS:CAUSE VIOLENT INJURY/ETC, or CAUSE PROPERTY DAMAGE, or THREATEN CRIME WITH INTENT TO TERRORIZE")
+line6 <- c("PC496DF", "ATTEMPT TO COMMIT 496 PC:STOLEN PROPERTY")
+line7 <- c("HS11377M", "HS 11377(A) is POSSESS CONTROLLED SUBSTANCE, but this has no (A)")
+line8 <- c("PC3455F", "Felony Violation of Post-Release Community Supervision (PRCS)")
+line9 <- c("PC3000.08F",  "Violation of `Sex-Offender` Supervision")
+
+# update the codebook
+charge_codebook <- rbind(charge_codebook, line1, line2, line3, line4, line5, line6, line7, line8, line9)
+
+# remove the manual update objects from the workspace
+rm(line1, line2, line3, line4, line5, line6, line7, line8, line9)
+
+```
+
+
+Create BCS Codebook
+```{r}
+
+bcs_codebook <- chargecodes %>%
+  group_by(key) %>%
+  summarise(BCS_code_added = paste(BCS_code, collapse = "----,---- "))
+# issue here is that a few BCS codes are both misdemeanor (M) and felony (F), 
+# so not sure how severtiy is measured for those
+
+```
+
+
+
+##############################################################
+######## Merge Charge Descriptions with Main Dataframe #######
+##############################################################
+
+
+Create a function that cleans up the Charge Code Columns in the main dataframe
+
+```{r}
+
+charge_cleaner <- function(df, column, severity) {
+  # these two lines allow the function to call the columns without quotes
+  # column <- deparse(substitute(column))
+  # severity <- deparse(substitute(severity))
+  
+  # remove ampersands (&)
+  df[[column]] <- sub("&", "", df[[column]])
+  # change CVC to VC
+  df[[column]] <- sub("CVC", "VC", df[[column]])
+
+  # create key
+  df[[paste(column, "key", sep = "_")]] <- paste(df[[column]], df[[severity]], sep="")
+  # remove spaces
+  df[[paste(column, "key", sep = "_")]] <- gsub(" ", "", df[[paste(column, "key", sep = "_")]], fixed = TRUE)
+  # make uppercase
+  df[[paste(column, "key", sep = "_")]] <- toupper(df[[paste(column, "key", sep = "_")]])
+  
+  # turn "NANA" into actual NAs
+  df[[paste(column, "key", sep = "_")]] <- na_if(df[[paste(column, "key", sep = "_")]], "NANA")
+  
+  # select new key column
+  as.data.frame(df[,c(1, ncol(df))])
+}
+
+
+
+```
+
+
+Apply this function over all the charge columns
+
+```{r}
+
+data_charge_list <- pmap(list(df = list(data),
+              column = list("Charge_Code_1", "Charge_Code_2", "Charge_Code_3",
+                            "Charge_Code_4",  "Charge_Code_5", "Charge_Code_6", 
+                            "Charge_Code_7", "Charge_Code_8", "Charge_Code_9", "Charge_Code_10", 
+                            "Charge_Code_11"),
+              severity = list("Severity_1_", "Severity_2_", "Severity_3_", "Severity_4_", 
+                              "Severity_5_", "Severity_6_", "Severity_7_", "Severity_8_", 
+                              "Severity_9_", "Severity_10_", "Severity_11_")),
+              charge_cleaner)
+
+```
+
+
+
+Create dataframe of these charge codes
+
+```{r}
+justkeys <- as.data.frame(cbind(data_charge_list[[1]][[2]], data_charge_list[[2]][[2]], 
+                                data_charge_list[[3]][[2]], data_charge_list[[4]][[2]],
+                                data_charge_list[[5]][[2]], data_charge_list[[6]][[2]], 
+                                data_charge_list[[7]][[2]], data_charge_list[[8]][[2]],
+                                data_charge_list[[9]][[2]], data_charge_list[[10]][[2]],
+                                data_charge_list[[11]][[2]]))
+```
+
+
+Create "id" column for sorting later
+
+```{r}
+justkeys$id <- 1:nrow(justkeys)
+```
+
+
+Create function for merging the keys and the charge descriptions
+
+```{r}
+charge_merge <- function(column) {
+  merge(x = justkeys, 
+        y = charge_codebook, 
+        by.x = column, 
+        by.y = "key", 
+        all.x = TRUE) %>%
+  select(id, unique_description)
+}
+```
+
+
+
+Map it over all the "justkeys" columns
+
+```{r}
+charge_dscrpt <- map(c("V1", "V2", "V3", "V4", "V5", "V6", 
+                       "V7", "V8", "V9", "V10", "V11"), charge_merge)
+```
+
+
+Sort the output so they'll line up when merged with main dataframe
+
+```{r}
+charge_dscrpt[[1]] <- arrange(charge_dscrpt[[1]], id)
+charge_dscrpt[[2]] <- arrange(charge_dscrpt[[2]], id)
+charge_dscrpt[[3]] <- arrange(charge_dscrpt[[3]], id)
+charge_dscrpt[[4]] <- arrange(charge_dscrpt[[4]], id)
+charge_dscrpt[[5]] <- arrange(charge_dscrpt[[5]], id)
+charge_dscrpt[[6]] <- arrange(charge_dscrpt[[6]], id)
+charge_dscrpt[[7]] <- arrange(charge_dscrpt[[7]], id)
+charge_dscrpt[[8]] <- arrange(charge_dscrpt[[8]], id)
+charge_dscrpt[[9]] <- arrange(charge_dscrpt[[9]], id)
+charge_dscrpt[[10]] <- arrange(charge_dscrpt[[10]], id)
+charge_dscrpt[[11]] <- arrange(charge_dscrpt[[11]], id)
+```
+
+
+Merge them into the main dataframe
+
+```{r}
+data2 <- cbind(data, charge_dscrpt[[1]][[2]], charge_dscrpt[[2]][[2]], charge_dscrpt[[3]][[2]], 
+               charge_dscrpt[[4]][[2]], charge_dscrpt[[5]][[2]], charge_dscrpt[[6]][[2]], 
+               charge_dscrpt[[7]][[2]], charge_dscrpt[[8]][[2]], charge_dscrpt[[9]][[2]], 
+               charge_dscrpt[[10]][[2]], charge_dscrpt[[11]][[2]])
+```
+
+
+
+Rename these new charge description columns:
+
+```{r}
+oldnames = c("charge_dscrpt[[1]][[2]]", "charge_dscrpt[[2]][[2]]", "charge_dscrpt[[3]][[2]]",
+             "charge_dscrpt[[4]][[2]]", "charge_dscrpt[[5]][[2]]", "charge_dscrpt[[6]][[2]]",
+             "charge_dscrpt[[7]][[2]]", "charge_dscrpt[[8]][[2]]", "charge_dscrpt[[9]][[2]]",
+             "charge_dscrpt[[10]][[2]]", "charge_dscrpt[[11]][[2]]")
+newnames = c("Charge_1", "Charge_2", "Charge_3", "Charge_4", "Charge_5", "Charge_6", 
+             "Charge_7", "Charge_8", "Charge_9", "Charge_10", "Charge_11")
+
+data2 <- data2 %>%
+  rename_at(vars(oldnames), ~ newnames)
+```
+
+
+
+
+
+
+##############################################################
+########      Merge BCS Codes with Main Dataframe      #######
+##############################################################
+
+
+Create function for matching BCS codes to the key column
+
+```{r}
+bcs_merge <- function(column) {
+  merge(x = justkeys, 
+        y = bcs_codebook, 
+        by.x = column, 
+        by.y = "key", 
+        all.x = TRUE) %>%
+  select(id, BCS_code_added)
+}
+```
+
+
+
+Map it over all the "justkeys" columns
+
+```{r}
+bcs_list <- map(c("V1", "V2", "V3", "V4", "V5", "V6", 
+                       "V7", "V8", "V9", "V10", "V11"), bcs_merge)
+```
+
+
+Sort the output so they will line up when merged
+
+```{r}
+bcs_list[[1]] <- arrange(bcs_list[[1]], id)
+bcs_list[[2]] <- arrange(bcs_list[[2]], id)
+bcs_list[[3]] <- arrange(bcs_list[[3]], id)
+bcs_list[[4]] <- arrange(bcs_list[[4]], id)
+bcs_list[[5]] <- arrange(bcs_list[[5]], id)
+bcs_list[[6]] <- arrange(bcs_list[[6]], id)
+bcs_list[[7]] <- arrange(bcs_list[[7]], id)
+bcs_list[[8]] <- arrange(bcs_list[[8]], id)
+bcs_list[[9]] <- arrange(bcs_list[[9]], id)
+bcs_list[[10]] <- arrange(bcs_list[[10]], id)
+bcs_list[[11]] <- arrange(bcs_list[[11]], id)
+```
+
+
+Merge them into the main dataframe
+
+```{r}
+data3 <- cbind(data2, bcs_list[[1]][[2]], bcs_list[[2]][[2]], bcs_list[[3]][[2]], 
+               bcs_list[[4]][[2]], bcs_list[[5]][[2]], bcs_list[[6]][[2]], 
+               bcs_list[[7]][[2]], bcs_list[[8]][[2]], bcs_list[[9]][[2]], 
+               bcs_list[[10]][[2]], bcs_list[[11]][[2]])
+```
+
+
+
+Rename these new BCS code columns:
+
+```{r}
+oldnames = c("bcs_list[[1]][[2]]", "bcs_list[[2]][[2]]", "bcs_list[[3]][[2]]",
+             "bcs_list[[4]][[2]]", "bcs_list[[5]][[2]]", "bcs_list[[6]][[2]]",
+             "bcs_list[[7]][[2]]", "bcs_list[[8]][[2]]", "bcs_list[[9]][[2]]",
+             "bcs_list[[10]][[2]]", "bcs_list[[11]][[2]]")
+newnames = c("bcs_charge_1", "bcs_charge_2", "bcs_charge_3", "bcs_charge_4", 
+             "bcs_charge_5", "bcs__charge_6", "bcs_charge_7", "bcs_charge_8", 
+             "bcs_charge_9", "bcs_charge_10", "bcs_charge_11")
+
+data3 <- data3 %>%
+  rename_at(vars(oldnames), ~ newnames)
+```
+
+
+
+
+
+##############################################################
+########      Create clean demographic columns      #########
+##############################################################
+
+
+
+Create new columns for race, gender, zip codes, and cities, including only the most common instances of each:
+
+```{r}
+data3 <- data3 %>%
+  mutate(clean_race = recode(Race, 'F' = 'Other',
+                           'O' = 'Other' ,
+                           'X' = 'Other' ,
+                           'L' = 'Other' ,
+                           'C' = 'Other' ,
+                           'I' = 'Other' ,
+                           'P' = 'Other' ,
+                           'Z' = 'Other' ,
+                           'S' = 'Other' ,
+                           'V' = 'Other' ,
+                           'G' = 'Other' ,
+                           'J' = 'Other' ,
+                           'U' = 'Other'),
+         clean_gender = recode(Gender, 'P' = NA_character_, "U" = NA_character_),
+         common_zips = recode(Zip_Code, `0`	=	0, 
+                              `94509`	=	94509,
+                              `94565`	=	94565,
+                              `94806`	=	94806,
+                              `94804`	=	94804,
+                              `94520`	=	94520,
+                              `94801`	=	94801,
+                              `94553`	=	94553,
+                              `94561`	=	94561,
+                              `45650`	=	45650,
+                              `94513`	=	94513,
+                              `45090`	=	45090,
+                              `48060`	=	48060,
+                              `94521`	=	94521,
+                              `94519`	=	94519,
+                              `94803`	=	94803,
+                              `94523`	=	94523,
+                              .default = 99999),
+         common_cities = recode(City, "Antioch"	=	"Antioch",
+                              "Richmond"	=	"Richmond",
+                              "Pittsburg"	=	"Pittsburg",
+                              "Concord"	=	"Concord",
+                              "San Pablo"	=	"San Pablo",
+                              "Martinez"	=	"Martinez",
+                              "Bay Point"	=	"Bay Point",
+                              "Oakland"	=	"Oakland",
+                              "Oakley"	=	"Oakley",
+                              "Brentwood"	=	"Brentwood",
+                              "Vallejo"	=	"Vallejo",
+                              "San Francisco"	=	"San Francisco",
+                              "Walnut Creek"	=	"Walnut Creek",
+                              "El Sobrante"	=	"El Sobrante",
+                              "Pleasant Hill"	=	"Pleasant Hill",
+                              "Pinole"	=	"Pinole",
+                              "Hercules"	=	"Hercules",
+                              "Rodeo"	=	"Rodeo",
+                              .default = "other"))
+```
+
+
+
+
+Write this out to a csv:
+
+```{r}
+
+write_csv(data3, "ccc_final_data.csv")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+I found frequency tables for the columns very helpful in determining what my data looked like at any given time. Below I have copied the very repetitve code I wrote to do this, but it should be able to be done as a function without too much trouble. Having it map over ALL the columns in the dataframe could also be helpful.
+
+
+```{r}
+
+bcs1table <- as.data.frame(table(data3$bcs_charge_1, useNA = "ifany")) %>%
+  arrange(-Freq)
+
+racetable <- as.data.frame(table(data3$Race, useNA = "ifany")) %>%
+  arrange(-Freq)
+
+gendertable <- as.data.frame(table(data3$Gender, useNA = "ifany")) %>%
+  arrange(-Freq)
+
+citytable <- as.data.frame(table(data3$City, useNA = "ifany")) %>%
+  arrange(-Freq)
+
+counttable <- as.data.frame(table(data3$Count_1_, useNA = "ifany")) %>%
+  arrange(-Freq)
+
+chargetable  <- as.data.frame(table(data3$Charge_Code_1, useNA = "ifany")) %>%
+  arrange(-Freq)
+
+severitytable <- as.data.frame(table(data3$Severity_1_, useNA = "ifany")) %>%
+  arrange(-Freq)
+
+dispositiontable  <- as.data.frame(table(data3$Disposition_1_, useNA = "ifany")) %>%
+  arrange(-Freq)
+
+prisontable <- as.data.frame(table(data3$Prison_1_1_, useNA = "ifany")) %>%
+  arrange(-Freq)
+
+enhancetable <- as.data.frame(table(data3$Charge_Enhance_1_1_, useNA = "ifany")) %>%
+  arrange(-Freq)
+
+probationtable <- as.data.frame(table(data3$Probation_Rev_Type_1_1_, useNA = "ifany")) %>%
+  arrange(-Freq)
+
+defenhancetable <- as.data.frame(table(data3$Defendant_Enhance_1, useNA = "ifany")) %>%
+  arrange(-Freq)
+
+incidentagencytable <- as.data.frame(table(data3$Incident_Agency_1, useNA = "ifany")) %>%
+  arrange(-Freq)
+
+amounttable <- as.data.frame(table(data3$Amount, useNA = "ifany")) %>%
+  arrange(-Freq)
+
+acttable <- as.data.frame(table(data3$Act_1, useNA = "ifany")) %>%
+  arrange(-Freq)
+
+restitutiontable <- as.data.frame(table(data3$Restitution, useNA = "ifany")) %>%
+  arrange(-Freq)
+```
+
+
+
+We can put these into an excel file:
+```{r}
+# we can then put these into a excel file with each dataframe as a separate sheet
+# requires 
+library(openxlsx)
+
+# Create a blank workbook
+OUT <- createWorkbook()
+
+# Add some sheets to the workbook
+addWorksheet(OUT, "bcs1")
+addWorksheet(OUT, "race")
+addWorksheet(OUT, "city")
+addWorksheet(OUT, "count")
+addWorksheet(OUT, "charge")
+addWorksheet(OUT, "severity")
+addWorksheet(OUT, "disposition")
+addWorksheet(OUT, "prison")
+addWorksheet(OUT, "charge enhance")
+addWorksheet(OUT, "probation")
+addWorksheet(OUT, "defendant enhance")
+addWorksheet(OUT, "incident agency")
+addWorksheet(OUT, "amount")
+addWorksheet(OUT, "act")
+addWorksheet(OUT, "restitution")
+
+# Write the data to the sheets
+writeData(OUT, sheet = "bcs1", x = bcs1table)
+writeData(OUT, sheet = "race", x = racetable)
+writeData(OUT, sheet = "city", x = citytable)
+writeData(OUT, sheet = "count", x = counttable)
+writeData(OUT, sheet = "charge", x = chargetable)
+writeData(OUT, sheet = "severity", x = severitytable)
+writeData(OUT, sheet = "disposition", x = dispositiontable)
+writeData(OUT, sheet = "prison", x = prisontable)
+writeData(OUT, sheet = "charge enhance", x = enhancetable)
+writeData(OUT, sheet = "probation", x = probationtable)
+writeData(OUT, sheet = "defendant enhance", x = defenhancetable)
+writeData(OUT, sheet = "incident agency", x = incidentagencytable)
+writeData(OUT, sheet = "amount", x = amounttable)
+writeData(OUT, sheet = "act", x = acttable)
+writeData(OUT, sheet = "restitution", x = restitutiontable)
+
+# Export the file
+saveWorkbook(OUT, "summary_tables.xlsx")
+
+
+```
+
+
+
+Obviously summary tables can be created and added to the excel file as tabs for any columns you wish
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
